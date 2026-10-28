@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Can I park here? Den Haag Zone 01 Centrum</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css">
+<style>
+html,body{height:100%;margin:0;font:16px/1.4 system-ui,-apple-system,"Segoe UI",sans-serif;color:#1d2420}
+#map{position:absolute;inset:0}
+#top{position:absolute;z-index:1000;top:12px;left:12px;right:12px;max-width:520px;display:flex;gap:8px;background:#fff;border-radius:14px;padding:8px;box-shadow:0 4px 18px rgba(0,0,0,.2)}
+#top input{flex:1;min-width:0;border:0;font:inherit;padding:10px;outline:none;background:transparent}
+#top button{border:0;border-radius:10px;background:#1b7a3d;color:#fff;font:inherit;font-weight:600;padding:0 16px;cursor:pointer}
+#card{position:absolute;z-index:1000;left:12px;right:12px;bottom:calc(12px + env(safe-area-inset-bottom,0px));max-width:520px;background:#fff;border-radius:16px;padding:14px 16px;box-shadow:0 4px 18px rgba(0,0,0,.25)}
+#card .v{display:flex;gap:10px;align-items:center;font-weight:700;font-size:1.1rem}
+#card .v i{font-style:normal;font-size:1.7rem}
+#card.ok{background:#168a3e;color:#fff}#card.no{background:#c62828;color:#fff}#card.na{background:#fff;border-left:8px solid #9aa59e}#card.ok p,#card.no p{color:#fff;opacity:.95}#card.ok .lab,#card.no .lab{color:#fff}#card .v{font-size:1.35rem}
+#card p{margin:6px 0 0;color:#5d6862;font-size:.9rem}
+#card .t{display:flex;gap:6px;margin-top:10px;flex-wrap:wrap}
+#card select,#card input{font:inherit;font-size:.9rem;padding:6px 8px;border:1px solid #dfe3dc;border-radius:8px;background:#fff;color:#1d2420}
+.sc{margin-top:10px;font-size:.95rem;line-height:1.6}.bar{position:relative;height:12px;border-radius:6px;margin-top:8px;border:2px solid #fff;outline:1px solid rgba(0,0,0,.15)}.bar b{position:absolute;top:-3px;width:3px;height:18px;background:#1d2420;border-radius:2px;box-shadow:0 0 0 2px #fff}.lab{display:flex;justify-content:space-between;font-size:.7rem;color:#5d6862;margin-top:2px}
+.legend{position:absolute;z-index:1000;top:72px;left:12px;background:#fff;border-radius:10px;padding:6px 10px;font-size:.82rem;box-shadow:0 2px 8px rgba(0,0,0,.2)}
+.legend i{display:inline-block;width:14px;height:10px;margin-right:6px;border-radius:2px}
+</style>
+</head>
+<body>
+<div id="map"></div>
+<form id="top"><input id="q" placeholder="Search an address, e.g. Noordeinde 66" autocomplete="off"><button>Check</button></form>
+<div class="legend"><i style="background:#1b9a4b;opacity:.6"></i>Zone 01 Centrum &nbsp; <i style="background:#c62828"></i>Not valid at this time<br><span id="chip"></span></div>
+<div id="card" class="na"><div class="v"><i>🅿️</i><span id="vt">Search an address or tap the map</span></div><p id="vd">Loading the Zone 01 area…</p><div id="sch"></div>
+<div class="t"><select id="day"><option value="1">Mon</option><option value="2">Tue</option><option value="3">Wed</option><option value="4">Thu</option><option value="5">Fri</option><option value="6">Sat</option><option value="0">Sun</option></select><input type="text" id="time" inputmode="numeric" maxlength="5" size="5" placeholder="HH:MM" aria-label="Time (24h)"><span style="align-self:center;font-size:.8rem;opacity:.9">check another time</span></div></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
+<script>
+// Restricted streets inside zone 01: permit NOT valid in these hours (source: Gemeente Den Haag zone 01 folder, May 2023)
+const S=[
+ ["Hoefkade","between Fanius Scholtenstraat and Stationsweg",17],["Stationsplein","",17],["Stationsweg","except even numbers 30–64",17],
+ ["Prins Hendrikstraat","between Waldeck Pyrmontkade and Prins Hendrikplein",17],["Zoutmanstraat","",17],["Piet Heinstraat","",17],
+ ["Frederikstraat","except side branch",18],["Denneweg","",18],["Jan Hendrikstraat","",18],["Javastraat","between Schelpkade and side branch, and nos. 69a–85",18],
+ ["Kneuterdijk","",18],["Noordeinde","",18],["Prinsestraat","",18],["Torenstraat","before nos. 2–126",18],
+ ["Westeinde","between Jan Hendrikstraat and Vleerstraat",18],["Wagenstraat","",18],["Boekhorststraat","",18,21],["Spui","between Schedeldoekshaven and Ververstraat",18,21],
+ ["Hunsestraat","",24,0,1],["Pletterijkade","between Weteringkade and Hunsestraat",24,0,1]
+].map(a=>({n:a[0],d:a[1],e:a[2],thu:a[3]||0,sun:a[4]?[13,24]:null}));
+const $=id=>document.getElementById(id), fmt=h=>String(h%24).padStart(2,"0")+":00";
+const find=n=>S.find(s=>s.n.toLowerCase()===String(n||"").toLowerCase());
+function check(s,day,min){const h=min/60;
+  if(day===0)return s.sun&&h>=s.sun[0]&&h<s.sun[1]?{ok:false,until:s.sun[1]}:{ok:true};
+  const end=(day===4&&s.thu)?s.thu:s.e;return h>=9&&h<end?{ok:false,until:end}:{ok:true};}
+let lastT="12:00";const when=()=>{const v=$("time").value.trim();if(/^([01]?\d|2[0-3]):[0-5]\d$/.test(v))lastT=v;const[a,b]=lastT.split(":").map(Number);return{day:+$("day").value,min:a*60+b};};
+
+const map=L.map("map",{zoomControl:false}).setView([52.0795,4.3150],15);
+L.control.zoom({position:"topright"}).addTo(map);
+L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png",{maxZoom:19,attribution:"© OpenStreetMap"}).addTo(map);
+let zone=[],marker=null,streetLayers=[],ways=[],all=[],hl=null,halo=null;
+
+// point in polygon (GeoJSON [lon,lat])
+const inRing=(pt,r)=>{let c=false;for(let i=0,j=r.length-1;i<r.length;j=i++){const[xi,yi]=r[i],[xj,yj]=r[j];if((yi>pt[1])!==(yj>pt[1])&&pt[0]<(xj-xi)*(pt[1]-yi)/(yj-yi)+xi)c=!c;}return c;};
+const inPoly=(pt,p)=>inRing(pt,p[0])&&!p.slice(1).some(h=>inRing(pt,h));
+const inG=(g,pt)=>g.type==="Polygon"?inPoly(pt,g.coordinates):g.type==="MultiPolygon"&&g.coordinates.some(p=>inPoly(pt,p));
+const in01A=(lat,lon)=>all.some(a=>a.z1a&&inG(a.f.geometry,[lon,lat]));
+function inZone(lat,lon){if(!zone.length)return null;
+  return zone.some(g=>g.type==="Polygon"?inPoly([lon,lat],g.coordinates):g.type==="MultiPolygon"&&g.coordinates.some(p=>inPoly([lon,lat],p)));}
+
+function show(kind,title,desc){$("sch").innerHTML="";$("card").className=kind;$("vt").textContent=title;$("vd").innerHTML=desc;}
+function verdict0(lat,lon,road){
+  let z=inZone(lat,lon);const a1=in01A(lat,lon);if(z===false&&a1)z=true;const{day,min}=when(),s=find(road),name=road||"this spot";
+  if(z===null)return show("na","Zone data not loaded","I can’t check the Zone 01 boundary right now. Reload the page.");
+  if(!z)return show("no","⛔ NO, outside Zone 01",`${name} is outside the Zone 01 Centrum area, so your permit is not valid here.`);
+  if(s){const r=check(s,day,min);
+    return r.ok?show("ok","✅ YES, you can park here",`${s.n} is inside Zone 01 and your permit is valid at this time.<br>Restricted Mon–Sat until ${fmt(s.e)}${s.d?" ("+s.d+")":""}.`)
+               :show("no","⛔ NO, do not park here now",`${s.n}: your permit is not valid here until ${fmt(r.until)}${s.d?" ("+s.d+")":""}. After that it is valid.`);}
+  if(a1)return show("na","Check the street signs",`${name} is in Centrum – Kernwinkelstraten (01A). Permit 01 only works here outside restricted hours, and this street isn’t on my list, so follow the signs.`);
+  show("ok","✅ YES, you can park here",`${name} is inside Zone 01 Centrum. Always follow local signs and parking bans.`);
+}
+
+const DAYS=["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"],hh=h=>String(h).padStart(2,"0")+":00";
+function sched(s,day,min){
+  let r=null;if(s){if(day===0){if(s.sun)r=s.sun;}else r=[9,(day===4&&s.thu)?s.thu:s.e];}
+  const pos=(min/1440*100).toFixed(1),lab='<div class="lab"><span>00</span><span>06</span><span>12</span><span>18</span><span>24</span></div>';
+  if(!r)return `<div class="sc"><b>${DAYS[day]}:</b> 🟢 You can park all day <b>(00:00–24:00)</b></div><div class="bar" style="background:#1b9a4b"><b style="left:${pos}%"></b></div>${lab}`;
+  const ok=[];if(r[0]>0)ok.push("00:00–"+hh(r[0]));if(r[1]<24)ok.push(hh(r[1])+"–24:00");
+  const a=(r[0]/24*100).toFixed(1),b=(r[1]/24*100).toFixed(1);
+  return `<div class="sc"><b>${DAYS[day]}</b><br>🔴 Permit not valid: <b>${hh(r[0])}–${hh(r[1])}</b><br>🟢 You can park: <b>${ok.join(" and ")}</b></div><div class="bar" style="background:linear-gradient(90deg,#1b9a4b ${a}%,#d32f2f ${a}% ${b}%,#1b9a4b ${b}%)"><b style="left:${pos}%"></b></div>${lab}`;
+}
+function paint(lat,lon){
+  [hl,halo].forEach(l=>l&&map.removeLayer(l));hl=halo=null;
+  const c=$("card").className;if(c==="na")return;
+  const col=c==="ok"?"#168a3e":"#c62828";
+  if(inZone(lat,lon)||in01A(lat,lon))halo=L.circleMarker([lat,lon],{radius:30,stroke:false,fillColor:col,fillOpacity:.25,interactive:false}).addTo(map);
+  if(marker){marker.setRadius(c==="no"?16:13);marker.bringToFront();}
+  const a=all.find(a=>a.z1a&&inG(a.f.geometry,[lon,lat]));
+  if(a&&c!=="na"){hl=L.geoJSON(a.f,{style:{color:col,weight:3,fillColor:col,fillOpacity:.3},interactive:false}).addTo(map);}
+}
+function verdict(lat,lon,road){verdict0(lat,lon,road);paint(lat,lon);const c=$("card").className;if(marker)marker.setStyle({fillColor:c==="ok"?"#168a3e":c==="no"?"#c62828":"#9aa59e"});if(inZone(lat,lon)||in01A(lat,lon)){const{day,min}=when();$("sch").innerHTML=sched(find(road),day,min);}}
+async function reverse(lat,lon){
+  try{const j=await(await fetch(`https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=18&lat=${lat}&lon=${lon}`)).json();return j.address&&(j.address.road||j.address.pedestrian);}catch(e){return null;}
+}
+function mark(lat,lon){if(marker)map.removeLayer(marker);marker=L.circleMarker([lat,lon],{radius:13,color:"#fff",weight:3,fillColor:"#9aa59e",fillOpacity:1}).addTo(map);}
+map.on("click",async e=>{mark(e.latlng.lat,e.latlng.lng);show("na","Checking…","");verdict(e.latlng.lat,e.latlng.lng,await reverse(e.latlng.lat,e.latlng.lng));});
+$("top").addEventListener("submit",async ev=>{ev.preventDefault();
+  let q=$("q").value.trim();if(!q)return;if(!/haag/i.test(q))q+=", Den Haag";
+  show("na","Searching…","");
+  try{const r=await(await fetch("https://nominatim.openstreetmap.org/search?format=jsonv2&addressdetails=1&limit=1&countrycodes=nl&q="+encodeURIComponent(q))).json();
+    if(!r.length)return show("na","Address not found","Try the street name and house number, e.g. “Noordeinde 66”.");
+    const a=r[0],lat=+a.lat,lon=+a.lon;mark(lat,lon);map.setView([lat,lon],18);
+    verdict(lat,lon,a.address.road||a.address.pedestrian);
+  }catch(e){show("na","Search failed","Check your connection and try again.");}});
+
+// Official Zone 01 area (Gemeente Den Haag open data, CC-0)
+async function loadZone(){
+  try{
+    const gj=await(await fetch("https://den-haag-opendata.opendatasoft.com/api/explore/v2.1/catalog/datasets/parkeervergunninggebieden/exports/geojson")).json();
+    const is01=f=>Object.values(f.properties||{}).some(v=>typeof v==="string"&&/^(zone\s*)?01(\s|$)|\s01$/i.test(v.trim()));
+    const is01A=f=>Object.values(f.properties||{}).some(v=>typeof v==="string"&&/^01A$/i.test(v.trim()));
+    all=gj.features.filter(f=>f.geometry).map(f=>({f,z1:is01(f),z1a:is01A(f)}));
+    const hits=gj.features.filter(is01);
+    if(!hits.length){show("na","Zone 01 not found in dataset","The dataset loaded, but I couldn’t identify Zone 01 in it. Use the official folder instead.");return;}
+    zone=hits.map(f=>f.geometry).filter(Boolean);
+    const layer=L.geoJSON(hits,{style:{color:"#1b7a3d",weight:3,fillColor:"#1b9a4b",fillOpacity:.3},interactive:false}).addTo(map);
+    map.fitBounds(layer.getBounds(),{padding:[20,20]});
+    show("na","Search an address or tap the map","Green area = Zone 01 Centrum. Tap a street to see if you can park there.");
+    drawStreets();
+  }catch(e){show("na","Zone area could not be loaded","The municipality’s open-data server didn’t respond (or this window blocks it). Open this file directly in your browser and reload.");}
+}
+// Restricted streets in red when permit is not valid at the chosen time
+async function loadStreets(){
+  const q=`[out:json][timeout:30];way["highway"]["name"~"^(${S.map(s=>s.n).join("|")})$"](52.060,4.280,52.100,4.350);out geom;`;
+  for(const h of ["https://overpass-api.de/api/interpreter","https://overpass.kumi.systems/api/interpreter"]){
+    try{const r=await fetch(h,{method:"POST",body:"data="+encodeURIComponent(q)});if(!r.ok)throw 0;
+      ways=(await r.json()).elements.filter(w=>w.geometry&&find(w.tags.name));drawStreets();return;}catch(e){}}
+}
+function drawStreets(){streetLayers.forEach(l=>map.removeLayer(l));streetLayers=[];const{day,min}=when();const nRed=S.filter(s=>!check(s,day,min).ok).length;$("chip").textContent=["Sun","Mon","Tue","Wed","Thu","Fri","Sat"][day]+" "+String(Math.floor(min/60)).padStart(2,"0")+":"+String(min%60).padStart(2,"0")+": "+nRed+" of 20 restricted streets are red";
+  ways.forEach(w=>{if(!check(find(w.tags.name),day,min).ok){const pts=w.geometry.map(p=>[p.lat,p.lon]);streetLayers.push(L.polyline(pts,{color:"#c62828",weight:26,opacity:.22,interactive:false}).addTo(map),L.polyline(pts,{color:"#fff",weight:12,opacity:.95,interactive:false}).addTo(map),L.polyline(pts,{color:"#c62828",weight:8,opacity:1,interactive:false}).addTo(map));}});}
+function setNow(){const p=new Intl.DateTimeFormat("en-GB",{timeZone:"Europe/Amsterdam",weekday:"short",hour:"2-digit",minute:"2-digit",hour12:false}).formatToParts(new Date());
+  const g=t=>p.find(x=>x.type===t).value;$("day").value={Sun:0,Mon:1,Tue:2,Wed:3,Thu:4,Fri:5,Sat:6}[g("weekday")];$("time").value=g("hour").replace("24","00")+":"+g("minute");}
+["day","time"].forEach(i=>$(i).addEventListener("input",()=>{drawStreets();if(marker){const l=marker.getLatLng();reverse(l.lat,l.lng).then(r=>verdict(l.lat,l.lng,r));}}));
+$("time").addEventListener("input",e=>{const v=e.target.value;if(/^\d{4}$/.test(v)){e.target.value=v.replace(/(\d{2})(\d{2})$/,"$1:$2");drawStreets();}});
+$("time").addEventListener("blur",e=>{const v=e.target.value;if(/^\d{3}$/.test(v)){e.target.value=v.replace(/(\d)(\d{2})$/,"0$1:$2");drawStreets();}});
+setNow();loadZone();loadStreets();
+</script>
+</body>
+</html>
