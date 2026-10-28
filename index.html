@@ -19,6 +19,7 @@ html,body{height:100%;margin:0;font:16px/1.4 system-ui,-apple-system,"Segoe UI",
 #card .t{display:flex;gap:6px;margin-top:10px;flex-wrap:wrap}
 #card select,#card input{font:inherit;font-size:.9rem;padding:6px 8px;border:1px solid #dfe3dc;border-radius:8px;background:#fff;color:#1d2420}
 .sc{margin-top:10px;font-size:.95rem;line-height:1.6}.bar{position:relative;height:12px;border-radius:6px;margin-top:8px;border:2px solid #fff;outline:1px solid rgba(0,0,0,.15)}.bar b{position:absolute;top:-3px;width:3px;height:18px;background:#1d2420;border-radius:2px;box-shadow:0 0 0 2px #fff}.lab{display:flex;justify-content:space-between;font-size:.7rem;color:#5d6862;margin-top:2px}
+#loc{position:absolute;z-index:1000;top:118px;right:10px;width:44px;height:44px;border:0;border-radius:50%;background:#fff;box-shadow:0 2px 8px rgba(0,0,0,.3);font-size:1.4rem;cursor:pointer}
 .legend{position:absolute;z-index:1000;top:72px;left:12px;background:#fff;border-radius:10px;padding:6px 10px;font-size:.82rem;box-shadow:0 2px 8px rgba(0,0,0,.2)}
 .legend i{display:inline-block;width:14px;height:10px;margin-right:6px;border-radius:2px}
 </style>
@@ -26,6 +27,7 @@ html,body{height:100%;margin:0;font:16px/1.4 system-ui,-apple-system,"Segoe UI",
 <body>
 <div id="map"></div>
 <form id="top"><input id="q" placeholder="Search an address, e.g. Noordeinde 66" autocomplete="off"><button>Check</button></form>
+<button id="loc" title="Use my location" aria-label="Use my location">📍</button>
 <div class="legend"><i style="background:#1b9a4b;opacity:.6"></i>Zone 01 Centrum &nbsp; <i style="background:#c62828"></i>Not valid at this time<br><span id="chip"></span></div>
 <div id="card" class="na"><div class="v"><i>🅿️</i><span id="vt">Search an address or tap the map</span></div><p id="vd">Loading the Zone 01 area…</p><div id="sch"></div>
 <div class="t"><select id="day"><option value="1">Mon</option><option value="2">Tue</option><option value="3">Wed</option><option value="4">Thu</option><option value="5">Fri</option><option value="6">Sat</option><option value="0">Sun</option></select><input type="text" id="time" inputmode="numeric" maxlength="5" size="5" placeholder="HH:MM" aria-label="Time (24h)"><span style="align-self:center;font-size:.8rem;opacity:.9">check another time</span></div></div>
@@ -96,8 +98,8 @@ async function reverse(lat,lon){
   try{const j=await(await fetch(`https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=18&lat=${lat}&lon=${lon}`)).json();return j.address&&(j.address.road||j.address.pedestrian);}catch(e){return null;}
 }
 function mark(lat,lon){if(marker)map.removeLayer(marker);marker=L.circleMarker([lat,lon],{radius:13,color:"#fff",weight:3,fillColor:"#9aa59e",fillOpacity:1}).addTo(map);}
-map.on("click",async e=>{mark(e.latlng.lat,e.latlng.lng);show("na","Checking…","");verdict(e.latlng.lat,e.latlng.lng,await reverse(e.latlng.lat,e.latlng.lng));});
-$("top").addEventListener("submit",async ev=>{ev.preventDefault();
+map.on("click",async e=>{stopWatch();mark(e.latlng.lat,e.latlng.lng);show("na","Checking…","");verdict(e.latlng.lat,e.latlng.lng,await reverse(e.latlng.lat,e.latlng.lng));});
+$("top").addEventListener("submit",async ev=>{ev.preventDefault();stopWatch();
   let q=$("q").value.trim();if(!q)return;if(!/haag/i.test(q))q+=", Den Haag";
   show("na","Searching…","");
   try{const r=await(await fetch("https://nominatim.openstreetmap.org/search?format=jsonv2&addressdetails=1&limit=1&countrycodes=nl&q="+encodeURIComponent(q))).json();
@@ -136,6 +138,30 @@ function setNow(){const p=new Intl.DateTimeFormat("en-GB",{timeZone:"Europe/Amst
 ["day","time"].forEach(i=>$(i).addEventListener("input",()=>{drawStreets();if(marker){const l=marker.getLatLng();reverse(l.lat,l.lng).then(r=>verdict(l.lat,l.lng,r));}}));
 $("time").addEventListener("input",e=>{const v=e.target.value;if(/^\d{4}$/.test(v)){e.target.value=v.replace(/(\d{2})(\d{2})$/,"$1:$2");drawStreets();}});
 $("time").addEventListener("blur",e=>{const v=e.target.value;if(/^\d{3}$/.test(v)){e.target.value=v.replace(/(\d)(\d{2})$/,"0$1:$2");drawStreets();}});
+
+// ---- My location ----
+let me=null,meAcc=null,watchId=null,lastQ=0,lastPos=null,firstFix=true;
+const dist=(a,b)=>{const R=6371000,r=Math.PI/180,dl=(b[0]-a[0])*r,dn=(b[1]-a[1])*r,x=Math.sin(dl/2)**2+Math.cos(a[0]*r)*Math.cos(b[0]*r)*Math.sin(dn/2)**2;return 2*R*Math.asin(Math.sqrt(x));};
+function stopWatch(){if(watchId!==null&&navigator.geolocation){navigator.geolocation.clearWatch(watchId);watchId=null;}}
+function locate(){
+  if(!navigator.geolocation)return show("na","Location not available","Your browser doesn’t support location.");
+  stopWatch();firstFix=true;show("na","Finding your location…","Allow location access if your browser asks.");
+  watchId=navigator.geolocation.watchPosition(onPos,()=>show("na","Location blocked","Allow location access for this page in your browser settings, then tap 📍 again."),{enableHighAccuracy:true,maximumAge:5000,timeout:20000});
+}
+async function onPos(p){
+  const lat=p.coords.latitude,lon=p.coords.longitude,acc=p.coords.accuracy,now=Date.now();
+  [me,meAcc].forEach(l=>l&&map.removeLayer(l));
+  meAcc=L.circle([lat,lon],{radius:acc,stroke:false,fillColor:"#1a73e8",fillOpacity:.12,interactive:false}).addTo(map);
+  me=L.circleMarker([lat,lon],{radius:6,color:"#fff",weight:2,fillColor:"#1a73e8",fillOpacity:1,interactive:false}).addTo(map);
+  if(firstFix||(lastPos&&dist(lastPos,[lat,lon])>25&&now-lastQ>10000)){
+    firstFix=false;lastQ=now;lastPos=[lat,lon];
+    map.setView([lat,lon],Math.max(map.getZoom(),17));mark(lat,lon);
+    verdict(lat,lon,await reverse(lat,lon));
+    if(acc>80)$("vd").innerHTML+=`<br>⚠️ Location accuracy is about ±${Math.round(acc)} m, so check the street name.`;
+    me.bringToFront();
+  }
+}
+$("loc").addEventListener("click",locate);
 setNow();loadZone();loadStreets();
 </script>
 </body>
